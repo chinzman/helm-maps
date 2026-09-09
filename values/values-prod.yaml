@@ -105,8 +105,9 @@ affinity:
                 - ml-api-chart
         topologyKey: topology.kubernetes.io/zone
 
-podAnnotations:
-  # Prometheus scraping
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "8080"
-  prometheus.io/path: "/metrics"
+# Pod annotations: empty by default; uncomment when ML application exposes Prometheus metrics
+podAnnotations: {}
+  # prometheus.io/scrape: "true"
+  # prometheus.io/port: "8080"
+  # prometheus.io/path: "/metrics"
+
