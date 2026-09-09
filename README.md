@@ -38,7 +38,11 @@ ml-api-chart/
 │   └── values-prod.yaml
 ├── secrets/                     # Secret management (see secrets/README.md)
 ├── cicd/                        # Jenkins and GitHub Actions pipelines
-├── iac/main.tf                  # Terraform snippet for EKS deployment
+├── iac/                         # Terraform root module for EKS deployment
+│   ├── providers.tf
+│   ├── variables.tf
+│   ├── main.tf
+│   └── outputs.tf
 └── README.md
 ```
 
@@ -193,7 +197,7 @@ helm install ml-api oci://ghcr.io/<org-or-username>/helm-charts/ml-api-chart \
 
 ## Infrastructure as Code
 
-`iac/main.tf` has a Terraform snippet showing how to deploy this chart to EKS using the `helm_release` resource.
+The `iac/` directory provides a Terraform configuration showing how to deploy this chart to EKS using the `helm_release` resource.
 
 Key points:
 - `atomic = true` means Terraform rolls back automatically if the deployment fails

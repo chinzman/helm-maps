@@ -1,80 +1,14 @@
 # =============================================================================
 # IaC — Terraform: Deploy ml-api-chart to EKS via helm_release
 # =============================================================================
-# This is a representative snippet, NOT a complete Terraform root module.
-# It shows how the Helm chart would be consumed via IaC in a real deployment.
+# This is a representative root module showing how the Helm chart is consumed
+# in a real EKS deployment pipeline.
 #
-# Assumed pre-existing resources (managed elsewhere):
-#   - AWS EKS cluster
-#   - VPC and node groups
+# Assumed pre-existing infrastructure:
+#   - AWS EKS cluster, VPC, node groups
 #   - GHCR credentials stored in AWS Secrets Manager
-#   - IAM role for IRSA
+#   - IAM roles for Service Accounts (IRSA)
 # =============================================================================
-
-terraform {
-  required_version = ">= 1.5.0"
-  required_providers {
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.13"
-    }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Variables
-# ---------------------------------------------------------------------------
-
-variable "environment" {
-  description = "Deployment environment (dev / staging / prod)"
-  type        = string
-  validation {
-    condition     = contains(["dev", "staging", "prod"], var.environment)
-    error_message = "environment must be one of: dev, staging, prod"
-  }
-}
-
-variable "chart_version" {
-  description = "Version of the ml-api Helm chart to deploy"
-  type        = string
-}
-
-variable "image_tag" {
-  description = "Docker image tag for the ML API"
-  type        = string
-}
-
-variable "eks_cluster_name" {
-  description = "Name of the EKS cluster"
-  type        = string
-}
-
-variable "aws_region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "ghcr_username" {
-  description = "GitHub username or service account for pulling OCI charts"
-  type        = string
-  default     = ""
-}
-
-variable "ghcr_token" {
-  description = "GitHub personal access token or CI secret for GHCR"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
 
 # ---------------------------------------------------------------------------
 # Data sources — look up the existing EKS cluster
@@ -86,31 +20,6 @@ data "aws_eks_cluster" "cluster" {
 
 data "aws_eks_cluster_auth" "cluster" {
   name = var.eks_cluster_name
-}
-
-# ---------------------------------------------------------------------------
-# Providers — connect to the EKS cluster
-# ---------------------------------------------------------------------------
-
-provider "kubernetes" {
-  host                   = data.aws_eks_cluster.cluster.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
-}
-
-provider "helm" {
-  kubernetes {
-    host                   = data.aws_eks_cluster.cluster.endpoint
-    cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
-    token                  = data.aws_eks_cluster_auth.cluster.token
-  }
-
-  # Authenticate to GHCR to pull the chart
-  registry {
-    url      = "oci://ghcr.io"
-    username = var.ghcr_username
-    password = var.ghcr_token  # Passed via tfvars or CI secret; never hardcoded
-  }
 }
 
 # ---------------------------------------------------------------------------
@@ -172,23 +81,4 @@ resource "helm_release" "ml_api" {
     # In production root modules/workspaces, set prevent_destroy = true to guard against accidental deletion.
     prevent_destroy = false
   }
-}
-
-# ---------------------------------------------------------------------------
-# Outputs
-# ---------------------------------------------------------------------------
-
-output "release_name" {
-  description = "Helm release name"
-  value       = helm_release.ml_api.name
-}
-
-output "release_namespace" {
-  description = "Kubernetes namespace"
-  value       = helm_release.ml_api.namespace
-}
-
-output "chart_version_deployed" {
-  description = "Chart version that was deployed"
-  value       = helm_release.ml_api.version
 }
