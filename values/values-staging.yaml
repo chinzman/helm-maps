@@ -28,10 +28,13 @@ service:
 ingress:
   enabled: true
   className: "nginx"
-  host: "ml-api-staging.internal.example.com"
+  host: "ml-api-staging.example.com"
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
-  tls: []                # TLS optional in staging; enable if testing cert flow
+  tls:
+    - secretName: ml-api-staging-tls-cert
+      hosts:
+        - ml-api-staging.example.com
 
 resources:
   requests:

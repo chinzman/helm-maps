@@ -127,7 +127,7 @@ The same chart, deployed differently per environment:
 | Image tag | `local` / `latest` | release candidate | pinned semver |
 | Replicas | 1 | 2 | 3 (baseline) |
 | Service | NodePort | ClusterIP | ClusterIP |
-| Ingress | off | on (HTTP) | on (HTTPS + TLS) |
+| Ingress | off | on (HTTPS + TLS) | on (HTTPS + TLS) |
 | Autoscaling | off | 2–5 replicas | 3–20 replicas |
 | CPU limit | 200m | 500m | 1000m |
 | Memory limit | 128Mi | 512Mi | 1Gi |
