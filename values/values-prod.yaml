@@ -1,0 +1,112 @@
+# VALUES — Production Environment
+#
+# Purpose: Live traffic. HA, autoscaling, TLS, strict resource limits.
+#
+# secretRef is disabled by default so this file can be used locally for testing.
+# In real production, secretRef.enabled must be true — the secret is created
+# automatically by External Secrets Operator from AWS Secrets Manager.
+# Never manually create or edit prod secrets.
+#
+# Important: never use `latest` as the image tag in production.
+# Always use a pinned, immutable tag (semver or git SHA).
+#
+# Deploy:
+#   helm upgrade --install ml-api-prod ./helm/ml-api-chart \
+#     -f values/values-prod.yaml \
+#     --namespace ml-prod --create-namespace
+
+environment: "production"
+
+image:
+  repository: ghcr.io/your-org/ml-api
+  tag: "1.2.0"           # Always pin to a specific release tag in prod
+  pullPolicy: IfNotPresent
+
+replicaCount: 3          # Baseline replicas; HPA will scale from here
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  host: "ml-api.example.com"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Rate limiting — protects model serving from abuse
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+  tls:
+    - secretName: ml-api-tls-cert
+      hosts:
+        - ml-api.example.com
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65    # Scale earlier in prod for headroom
+  targetMemoryUtilizationPercentage: 75
+
+env:
+  LOG_LEVEL: "WARNING"   # Minimize log verbosity in prod
+  MODEL_NAME: "my-model-v1"
+
+# Secrets:
+#   LOCAL  → overridden to false via values-local.yaml (no secret needed locally)
+#   CLOUD  → enabled: true here, ESO syncs from AWS Secrets Manager automatically
+#             Secret auto-rotates. No one ever handles the raw value.
+#             ESO config: secrets/external-secret-prod.yaml
+secretRef:
+  enabled: true
+  name: "ml-api-prod-secrets"
+
+# Service account annotations for IRSA (IAM Roles for Service Accounts)
+# Allows the pod to access AWS services (S3, Secrets Manager) without
+# storing credentials in the cluster.
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/ml-api-prod-role"
+
+# Strict pod security context
+podSecurityContext:
+  fsGroup: 1001
+  runAsNonRoot: true
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# Pod anti-affinity: spread across nodes AND zones for HA
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - ml-api-chart
+        topologyKey: topology.kubernetes.io/zone
+
+podAnnotations:
+  # Prometheus scraping
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"

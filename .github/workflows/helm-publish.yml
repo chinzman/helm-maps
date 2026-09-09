@@ -1,0 +1,262 @@
+name: Helm Chart CI/CD — Build, Test, and Publish
+
+# =============================================================================
+# WHEN THIS RUNS
+# =============================================================================
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'helm/**'
+      - 'values/**'
+      - '.github/workflows/helm-publish.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'helm/**'
+      - 'values/**'
+
+  # Allow manual trigger (e.g., to re-publish without a code change)
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Force publish even if version unchanged'
+        type: boolean
+        default: false
+
+# =============================================================================
+# PERMISSIONS
+# =============================================================================
+permissions:
+  contents: read
+  packages: write  # Required to push to GitHub Container Registry (GHCR)
+
+# =============================================================================
+# ENVIRONMENT VARIABLES
+# =============================================================================
+env:
+  CHART_NAME: ml-api-chart
+  CHART_PATH: ./helm/ml-api-chart
+  REGISTRY: ghcr.io
+  # GHCR repo: ghcr.io/<github-org>/<chart-name>
+  CHART_REGISTRY_URL: ghcr.io/${{ github.repository_owner }}/helm-charts
+
+# =============================================================================
+# JOBS
+# =============================================================================
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # JOB 1: Lint and validate the chart
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint Chart
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for chart-testing
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Add chart dependencies (if any)
+        run: helm dependency update ${{ env.CHART_PATH }}
+
+      - name: Lint chart (strict mode)
+        run: |
+          helm lint ${{ env.CHART_PATH }} --strict
+          helm lint ${{ env.CHART_PATH }} -f values/values-dev.yaml --strict
+          helm lint ${{ env.CHART_PATH }} -f values/values-staging.yaml --strict
+          helm lint ${{ env.CHART_PATH }} -f values/values-prod.yaml --strict
+
+      - name: Validate template rendering for all environments
+        run: |
+          echo "--- Dev template render ---"
+          helm template ml-api-dev ${{ env.CHART_PATH }} \
+            -f values/values-dev.yaml \
+            --namespace ml-dev \
+            > /dev/null
+
+          echo "--- Staging template render ---"
+          helm template ml-api-staging ${{ env.CHART_PATH }} \
+            -f values/values-staging.yaml \
+            --namespace ml-staging \
+            > /dev/null
+
+          echo "--- Production template render ---"
+          helm template ml-api-prod ${{ env.CHART_PATH }} \
+            -f values/values-prod.yaml \
+            --namespace ml-prod \
+            > /dev/null
+
+          echo "All environment templates rendered successfully."
+
+  # ---------------------------------------------------------------------------
+  # JOB 2: Unit tests using helm-unittest
+  # ---------------------------------------------------------------------------
+  unit-test:
+    name: Unit Tests (helm-unittest)
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Install helm-unittest plugin
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest 2>/dev/null || \
+          helm plugin install https://github.com/helm-unittest/helm-unittest --verify=false
+
+      - name: Run unit tests
+        run: |
+          helm unittest ${{ env.CHART_PATH }} \
+            --output-type JUnit \
+            --output-file unit-test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: helm-unit-test-results
+          path: unit-test-results.xml
+
+  # ---------------------------------------------------------------------------
+  # JOB 3: Integration test on a real (kind) cluster
+  # Spins up a local Kubernetes cluster, installs the chart, runs helm test
+  # ---------------------------------------------------------------------------
+  integration-test:
+    name: Integration Test (kind cluster)
+    runs-on: ubuntu-latest
+    needs: unit-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Set up kind (Kubernetes in Docker)
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: helm-test-cluster
+
+      - name: Build and load ML API image into kind
+        run: |
+          docker build -t ml-api:ci ./app/
+          kind load docker-image ml-api:ci --name helm-test-cluster
+
+      - name: Install chart on kind cluster
+        run: |
+          helm upgrade --install ml-api-ci ${{ env.CHART_PATH }} \
+            -f values/values-dev.yaml \
+            -f values/values-local.yaml \
+            --set image.repository=ml-api \
+            --set image.tag=ci \
+            --namespace ml-ci \
+            --create-namespace \
+            --wait \
+            --timeout 120s
+
+      - name: Verify pod is running
+        run: |
+          kubectl get pods -n ml-ci
+          kubectl wait --for=condition=Ready pod \
+            -l app.kubernetes.io/instance=ml-api-ci \
+            -n ml-ci \
+            --timeout=90s
+
+      - name: Check pod logs
+        run: kubectl logs -l app.kubernetes.io/instance=ml-api-ci -n ml-ci --tail=20
+
+      - name: Run helm test (in-cluster connectivity checks)
+        run: |
+          helm test ml-api-ci -n ml-ci --logs
+
+  # ---------------------------------------------------------------------------
+  # JOB 4: Package and publish the chart to GHCR
+  # Only runs on push to main (not on PRs)
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Package and Publish Chart
+    runs-on: ubuntu-latest
+    needs: [lint, unit-test, integration-test]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Extract chart version
+        id: chart_version
+        run: |
+          VERSION=$(grep '^version:' ${{ env.CHART_PATH }}/Chart.yaml | awk '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Chart version: $VERSION"
+
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+          helm registry login ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Package Helm chart
+        run: |
+          helm package ${{ env.CHART_PATH }} \
+            --destination ./dist \
+            --version ${{ steps.chart_version.outputs.version }}
+
+      - name: Push chart to GHCR (OCI)
+        run: |
+          CHART_FILE="./dist/${{ env.CHART_NAME }}-${{ steps.chart_version.outputs.version }}.tgz"
+          echo "Publishing: $CHART_FILE"
+
+          helm push "$CHART_FILE" \
+            oci://${{ env.CHART_REGISTRY_URL }}
+
+          echo "Chart published successfully!"
+          echo "Install with:"
+          echo "  helm install ml-api oci://${{ env.CHART_REGISTRY_URL }}/${{ env.CHART_NAME }} --version ${{ steps.chart_version.outputs.version }}"
+
+      - name: Upload packaged chart as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart-package
+          path: ./dist/
+
+      - name: Create GitHub Release for chart version
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ./dist/*.tgz
+          name: "Chart v${{ steps.chart_version.outputs.version }}"
+          body: |
+            Helm chart release: `${{ env.CHART_NAME }}` v`${{ steps.chart_version.outputs.version }}`
+
+            Install:
+            ```bash
+            helm install ml-api oci://${{ env.CHART_REGISTRY_URL }}/${{ env.CHART_NAME }} \
+              --version ${{ steps.chart_version.outputs.version }} \
+              -f values/values-prod.yaml
+            ```

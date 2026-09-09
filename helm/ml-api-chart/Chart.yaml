@@ -1,0 +1,24 @@
+apiVersion: v2
+name: ml-api-chart
+description: >
+  A generic Helm chart for deploying ML model serving APIs on Kubernetes.
+  Designed to support Dev, Staging, and Production environments through
+  environment-specific values files, keeping chart internals unchanged.
+
+type: application
+
+# Chart version — bump this on chart changes (not app changes)
+version: 0.1.0
+
+# App version — the default ML API image tag
+appVersion: "1.0.0"
+
+keywords:
+  - mlops
+  - machine-learning
+  - api
+  - kubernetes
+
+maintainers:
+  - name: MLOps Platform Team
+    email: mlops@example.com

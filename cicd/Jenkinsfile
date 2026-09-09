@@ -1,0 +1,279 @@
+#!/usr/bin/env groovy
+// =============================================================================
+// Jenkinsfile — ml-api-chart: Build, Test, Publish
+// =============================================================================
+// Pipeline stages (same logic as .github/workflows/helm-publish.yml):
+//   1. Lint         — helm lint --strict for all 3 environment values files
+//   2. Unit Test    — helm-unittest plugin (no cluster needed)
+//   3. Integration  — Deploy to a kind (K8s-in-Docker) cluster and verify
+//   4. Publish      — Package and push chart to OCI registry (GHCR)
+//
+// PREREQUISITES (install on the Jenkins agent/node):
+//   - helm (v3.8+)
+//   - kubectl
+//   - kind
+//   - docker (for kind)
+//   - helm-unittest plugin: helm plugin install https://github.com/helm-unittest/helm-unittest
+//
+// CREDENTIALS (set in Jenkins → Manage Jenkins → Credentials):
+//   - GHCR_TOKEN    : Secret Text — GitHub Personal Access Token (packages:write)
+//   - GHCR_USERNAME : Secret Text — GitHub username or org name
+// =============================================================================
+
+pipeline {
+
+    // Run on any agent that has helm + docker available
+    // In production, use a label: agent { label 'helm-agent' }
+    agent any
+
+    // ---------------------------------------------------------------------------
+    // Pipeline-level environment variables
+    // ---------------------------------------------------------------------------
+    environment {
+        CHART_NAME     = 'ml-api-chart'
+        CHART_PATH     = './helm/ml-api-chart'
+        REGISTRY       = 'ghcr.io'
+        // CHART_REGISTRY_URL is built dynamically in the Publish stage
+        // because GHCR_USERNAME comes from credentials
+    }
+
+    // ---------------------------------------------------------------------------
+    // Global options
+    // ---------------------------------------------------------------------------
+    options {
+        // Keep last 10 builds in Jenkins UI
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        // Fail the build if it runs for more than 30 minutes
+        timeout(time: 30, unit: 'MINUTES')
+        // Add timestamps to console output — very useful for debugging
+        timestamps()
+        // Don't allow concurrent builds on the same branch (prevents race conditions)
+        disableConcurrentBuilds()
+    }
+
+    // ---------------------------------------------------------------------------
+    // Trigger: poll SCM every 5 minutes, or use a GitHub webhook for instant trigger
+    // ---------------------------------------------------------------------------
+    triggers {
+        // GitHub webhook is preferred. Use pollSCM as a fallback:
+        // pollSCM('H/5 * * * *')
+        githubPush()
+    }
+
+    // ===========================================================================
+    // STAGES
+    // ===========================================================================
+    stages {
+
+        // -----------------------------------------------------------------------
+        // STAGE 1: Lint
+        // Validates chart syntax and template rendering for all environments.
+        // Runs on every branch — PRs and main.
+        // -----------------------------------------------------------------------
+        stage('Lint') {
+            steps {
+                echo '=== Linting Helm chart ==='
+
+                sh '''
+                    # Verify helm is available
+                    helm version --short
+
+                    # Lint with default values
+                    echo "Linting: default values"
+                    helm lint ${CHART_PATH} --strict
+
+                    # Lint with each environment values file
+                    for env in dev staging prod; do
+                        echo "Linting: values-${env}.yaml"
+                        helm lint ${CHART_PATH} -f values/values-${env}.yaml --strict
+                    done
+
+                    # Validate template rendering (catches rendering errors lint misses)
+                    echo "Validating template renders..."
+                    for env in dev staging prod; do
+                        echo "  Rendering: ${env}"
+                        helm template ml-api-${env} ${CHART_PATH} \\
+                            -f values/values-${env}.yaml \\
+                            --namespace ml-${env} \\
+                            > /dev/null
+                        echo "  OK"
+                    done
+
+                    echo "Lint passed for all environments."
+                '''
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // STAGE 2: Unit Tests (helm-unittest)
+        // Runs template logic tests — no cluster required.
+        // Tests cover: replicas, HPA, image tags, ingress, secrets, security context
+        // -----------------------------------------------------------------------
+        stage('Unit Test') {
+            steps {
+                echo '=== Running helm-unittest ==='
+
+                sh '''
+                    # Install helm-unittest if not already present
+                    helm plugin list | grep -q unittest || \
+                        helm plugin install https://github.com/helm-unittest/helm-unittest 2>/dev/null || \
+                        helm plugin install https://github.com/helm-unittest/helm-unittest --verify=false
+
+                    # Run tests and output JUnit XML for Jenkins test reporting
+                    mkdir -p test-results
+                    helm unittest ${CHART_PATH} \
+                        --file "tests/unit_test.yaml" \
+                        --output-type JUnit \
+                        --output-file test-results/helm-unit-tests.xml
+                '''
+            }
+
+            post {
+                always {
+                    // Publish JUnit results in Jenkins UI (shows pass/fail per test)
+                    junit 'test-results/*.xml'
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // STAGE 3: Integration Test (kind cluster)
+        // Spins up a real (local) Kubernetes cluster using kind,
+        // deploys the chart, and verifies pods are healthy.
+        // Builds and deploys the sample ML API from ./app/ and verifies endpoints.
+        // -----------------------------------------------------------------------
+        stage('Integration Test') {
+            steps {
+                echo '=== Integration Test: Deploy to kind cluster ==='
+
+                sh '''
+                    # Create a throwaway kind cluster for this build
+                    CLUSTER_NAME="jenkins-helm-test-${BUILD_NUMBER}"
+                    kind create cluster --name ${CLUSTER_NAME} --wait 60s
+
+                    # Point kubectl at the kind cluster
+                    kind get kubeconfig --name ${CLUSTER_NAME} > /tmp/kind-kubeconfig
+                    export KUBECONFIG=/tmp/kind-kubeconfig
+
+                    # Build our actual ML API image and load it into kind
+                    docker build -t ml-api:ci ./app/
+                    kind load docker-image ml-api:ci --name ${CLUSTER_NAME}
+
+                    # Deploy the chart with dev values and local overlay
+                    kubectl create namespace ml-ci
+
+                    helm upgrade --install ml-api-ci ${CHART_PATH} \
+                        -f values/values-dev.yaml \
+                        -f values/values-local.yaml \
+                        --set image.repository=ml-api \
+                        --set image.tag=ci \
+                        --namespace ml-ci \
+                        --wait \
+                        --timeout 120s
+
+                    # Verify pods are Ready
+                    kubectl get pods -n ml-ci
+                    kubectl wait --for=condition=Ready pod \\
+                        -l app.kubernetes.io/instance=ml-api-ci \\
+                        -n ml-ci \\
+                        --timeout=90s
+
+                    # Run helm test suite (in-cluster connectivity tests)
+                    helm test ml-api-ci -n ml-ci --logs
+
+                    echo "Integration test passed."
+                '''
+            }
+
+            post {
+                always {
+                    // Always clean up the kind cluster, even if the stage fails
+                    sh '''
+                        CLUSTER_NAME="jenkins-helm-test-${BUILD_NUMBER}"
+                        kind delete cluster --name ${CLUSTER_NAME} 2>/dev/null || true
+                        echo "kind cluster cleaned up."
+                    '''
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // STAGE 4: Publish
+        // Packages the chart and pushes it to the OCI registry (GHCR).
+        // ONLY runs on the main branch — never on feature branches or PRs.
+        // -----------------------------------------------------------------------
+        stage('Publish') {
+            // Gate: only publish from main branch
+            when {
+                branch 'main'
+            }
+
+            steps {
+                echo '=== Packaging and publishing chart to GHCR ==='
+
+                // Load GHCR credentials from Jenkins Credentials store
+                withCredentials([
+                    string(credentialsId: 'GHCR_TOKEN',    variable: 'GHCR_TOKEN'),
+                    string(credentialsId: 'GHCR_USERNAME', variable: 'GHCR_USERNAME')
+                ]) {
+                    sh '''
+                        # Extract chart version from Chart.yaml
+                        CHART_VERSION=$(grep "^version:" ${CHART_PATH}/Chart.yaml | awk "{print \\$2}")
+                        echo "Chart version: ${CHART_VERSION}"
+
+                        # Log in to GHCR
+                        echo "${GHCR_TOKEN}" | helm registry login ${REGISTRY} \\
+                            --username "${GHCR_USERNAME}" \\
+                            --password-stdin
+
+                        # Package the chart
+                        mkdir -p dist
+                        helm package ${CHART_PATH} \\
+                            --destination ./dist \\
+                            --version ${CHART_VERSION}
+
+                        # Push to OCI registry
+                        CHART_FILE="./dist/${CHART_NAME}-${CHART_VERSION}.tgz"
+                        echo "Pushing: ${CHART_FILE}"
+
+                        helm push "${CHART_FILE}" \\
+                            oci://${REGISTRY}/${GHCR_USERNAME}/helm-charts
+
+                        echo "Published: ${CHART_NAME} v${CHART_VERSION}"
+                        echo ""
+                        echo "Install with:"
+                        echo "  helm install ml-api oci://${REGISTRY}/${GHCR_USERNAME}/helm-charts/${CHART_NAME} \\"
+                        echo "    --version ${CHART_VERSION} -f values/values-prod.yaml"
+                    '''
+                }
+            }
+
+            post {
+                success {
+                    // Archive the packaged chart as a Jenkins build artifact
+                    archiveArtifacts artifacts: 'dist/*.tgz', fingerprint: true
+                }
+            }
+        }
+    }
+
+    // ===========================================================================
+    // POST — runs after all stages regardless of outcome
+    // ===========================================================================
+    post {
+        success {
+            echo '✅ Pipeline completed successfully.'
+        }
+
+        failure {
+            echo '❌ Pipeline failed. Check the stage logs above.'
+            // In a real setup, send a Slack/Teams/email notification here:
+            // slackSend(channel: '#mlops-alerts', message: "Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
+        }
+
+        always {
+            // Clean up workspace after every build to avoid disk space issues
+            cleanWs()
+        }
+    }
+}

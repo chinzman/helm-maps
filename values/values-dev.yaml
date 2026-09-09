@@ -1,0 +1,57 @@
+# VALUES — Development Environment
+#
+# Purpose: Local development and quick iteration.
+# Low resources, single replica, ingress off, autoscaling off.
+#
+# secretRef is disabled by default so the chart runs on a fresh clone without
+# needing any secrets pre-created. In cloud deployments, set enabled: true —
+# the secret is created automatically by External Secrets Operator.
+#
+# Deploy:
+#   helm upgrade --install ml-api-dev ./helm/ml-api-chart \
+#     -f values/values-dev.yaml \
+#     --namespace ml-dev --create-namespace
+
+environment: "dev"
+
+image:
+  repository: ghcr.io/your-org/ml-api
+  tag: "latest"          # Dev typically tracks latest
+  pullPolicy: Always     # Always pull so devs get fresh builds
+
+replicaCount: 1          # Single replica — no HA needed in dev
+
+service:
+  type: NodePort         # Easier local access without ingress setup
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false         # Use port-forward or NodePort in dev
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"
+
+autoscaling:
+  enabled: false
+
+# Non-sensitive runtime config for dev
+env:
+  LOG_LEVEL: "DEBUG"
+  MODEL_NAME: "my-model-dev"
+
+# Secrets:
+#   LOCAL  → overridden to false via values-local.yaml (no secret needed locally)
+#   CLOUD  → enabled: true here, ESO syncs secret from AWS Secrets Manager
+secretRef:
+  enabled: true
+  name: "ml-api-dev-secrets"
+
+# Pod annotations: in dev we often disable istio sidecar injection for speed
+podAnnotations:
+  sidecar.istio.io/inject: "false"

@@ -1,0 +1,75 @@
+# VALUES — Staging Environment
+#
+# Purpose: Pre-production validation. Mirrors prod config at smaller scale.
+# Load testing, integration testing, and QA run here.
+#
+# secretRef is disabled by default so this can be run locally without secrets.
+# In cloud staging, set enabled: true — ESO syncs the secret from AWS automatically.
+#
+# Deploy:
+#   helm upgrade --install ml-api-staging ./helm/ml-api-chart \
+#     -f values/values-staging.yaml \
+#     --namespace ml-staging --create-namespace
+
+environment: "staging"
+
+image:
+  repository: ghcr.io/your-org/ml-api
+  tag: "rc-1.2.0"        # Release candidates are deployed to staging
+  pullPolicy: IfNotPresent
+
+replicaCount: 2          # Minimum 2 for HA testing
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  host: "ml-api-staging.internal.example.com"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  tls: []                # TLS optional in staging; enable if testing cert flow
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+env:
+  LOG_LEVEL: "INFO"
+  MODEL_NAME: "my-model-staging"
+
+# Secrets:
+#   LOCAL  → overridden to false via values-local.yaml (no secret needed locally)
+#   CLOUD  → enabled: true here, ESO syncs from AWS Secrets Manager automatically
+#             (secret path: staging/ml-api/secrets)
+secretRef:
+  enabled: true
+  name: "ml-api-staging-secrets"
+
+# Affinity: prefer spreading pods across nodes for resilience testing
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - ml-api-chart
+          topologyKey: kubernetes.io/hostname

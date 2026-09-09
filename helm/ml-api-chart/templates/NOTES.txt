@@ -1,0 +1,35 @@
+{{/*
+  Shown to the user after helm install or helm upgrade.
+  Keep this short and useful.
+*/}}
+
+ML API deployed successfully.
+
+Release:    {{ .Release.Name }}
+Namespace:  {{ .Release.Namespace }}
+Environment: {{ .Values.environment }}
+Image:      {{ .Values.image.repository }}:{{ include "ml-api-chart.imageTag" . }}
+
+{{- if .Values.ingress.enabled }}
+
+The API is exposed at:
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+
+Make sure DNS resolves {{ .Values.ingress.host }} to your ingress controller IP.
+
+{{- else }}
+
+Ingress is disabled. To reach the API from your machine:
+
+  kubectl port-forward svc/{{ include "ml-api-chart.fullname" . }} 9090:{{ .Values.service.port }} -n {{ .Release.Namespace }} &
+
+  curl http://localhost:9090/
+  curl http://localhost:9090/health
+  curl http://localhost:9090/predict?input=test
+
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+
+Autoscaling is on: {{ .Values.autoscaling.minReplicas }} to {{ .Values.autoscaling.maxReplicas }} replicas.
+CPU target: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%
+{{- end }}

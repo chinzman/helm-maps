@@ -1,0 +1,170 @@
+# =============================================================================
+# Helm Unit Tests — ml-api-chart
+# Uses the helm-unittest plugin: https://github.com/helm-unittest/helm-unittest
+#
+# Run with:
+#   helm unittest ./helm/ml-api-chart
+# =============================================================================
+
+suite: ml-api-chart unit tests
+
+templates:
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - ingress.yaml
+  - configmap.yaml
+
+tests:
+
+  # ---------------------------------------------------------------------------
+  - it: "should render a Deployment with correct replica count"
+    set:
+      replicaCount: 2
+      autoscaling.enabled: false
+    asserts:
+      - isKind:
+          of: Deployment
+        template: deployment.yaml
+      - equal:
+          path: spec.replicas
+          value: 2
+        template: deployment.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should NOT set spec.replicas when HPA is enabled (avoids drift)"
+    set:
+      autoscaling.enabled: true
+      autoscaling.minReplicas: 2
+      autoscaling.maxReplicas: 10
+    asserts:
+      - notExists:
+          path: spec.replicas
+        template: deployment.yaml
+      - isKind:
+          of: HorizontalPodAutoscaler
+        template: hpa.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should set ENVIRONMENT env var correctly"
+    set:
+      environment: "staging"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ENVIRONMENT
+            value: "staging"
+        template: deployment.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should use Chart.AppVersion as image tag when tag is empty"
+    set:
+      image.tag: ""
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ":1\\.0\\.0$"
+        template: deployment.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should use the overridden image tag when provided"
+    set:
+      image.tag: "rc-2.0.0"
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ":rc-2\\.0\\.0$"
+        template: deployment.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should not render Ingress when disabled"
+    set:
+      ingress.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: ingress.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should render Ingress with correct host when enabled"
+    set:
+      ingress.enabled: true
+      ingress.host: "ml-api.example.com"
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: "ml-api.example.com"
+        template: ingress.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should not render HPA when autoscaling is disabled"
+    set:
+      autoscaling.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: hpa.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should render HPA with correct min/max replicas"
+    set:
+      autoscaling.enabled: true
+      autoscaling.minReplicas: 3
+      autoscaling.maxReplicas: 15
+    asserts:
+      - equal:
+          path: spec.minReplicas
+          value: 3
+        template: hpa.yaml
+      - equal:
+          path: spec.maxReplicas
+          value: 15
+        template: hpa.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should inject secretRef envFrom when secretRef is enabled"
+    set:
+      secretRef.enabled: true
+      secretRef.name: "my-api-secrets"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: "my-api-secrets"
+        template: deployment.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should not render ConfigMap when disabled"
+    set:
+      configMap.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: configmap.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should apply common labels to all resources"
+    set:
+      environment: "dev"
+    asserts:
+      - isNotEmpty:
+          path: metadata.labels["app.kubernetes.io/name"]
+        template: deployment.yaml
+      - equal:
+          path: metadata.labels["app.kubernetes.io/environment"]
+          value: "dev"
+        template: deployment.yaml
+
+  # ---------------------------------------------------------------------------
+  - it: "should run as non-root user by default"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 1001
+        template: deployment.yaml

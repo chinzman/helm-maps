@@ -1,0 +1,93 @@
+# default values for ml-api-chart
+# these apply to all environments unless overridden in values-dev/staging/prod.yaml
+
+image:
+  repository: ghcr.io/your-org/ml-api
+  pullPolicy: IfNotPresent
+  tag: ""  # defaults to Chart.appVersion if not set
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# which environment this is (dev/staging/production)
+# gets injected as an env var into the pod
+environment: "dev"
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  host: "ml-api.local"
+  tls: []
+
+# keep these conservative in defaults — prod values file overrides them
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "250m"
+    memory: "256Mi"
+
+# HPA — disabled by default, enabled in staging and prod values
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+livenessProbe:
+  path: /health
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+readinessProbe:
+  path: /ready
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# non-sensitive env vars go here
+# sensitive ones go in secretRef below
+env: {}
+  # LOG_LEVEL: "INFO"
+  # MODEL_NAME: "my-model-v1"
+
+# point to an existing K8s secret — chart does not create the secret itself
+# for local dev: kubectl apply -f secrets/local-dev-secret.yaml
+# for cloud: External Secrets Operator creates it from AWS Secrets Manager
+secretRef:
+  enabled: false
+  name: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# optional config file mounted into the pod at /app/config
+configMap:
+  enabled: false
+  data: {}

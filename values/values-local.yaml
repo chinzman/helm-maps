@@ -1,0 +1,31 @@
+# values-local.yaml — Local development overrides
+#
+# This file is used ONLY when running locally (Minikube).
+# It overrides specific values from the environment file to make
+# local testing work without a registry or pre-created secrets.
+#
+# Usage — always combine with an environment values file:
+#
+#   helm upgrade --install ml-api-local ./helm/ml-api-chart \
+#     -f values/values-dev.yaml \
+#     -f values/values-local.yaml \
+#     --namespace ml-local --create-namespace --wait
+#
+# ml-local is the Minikube namespace for all local testing.
+# Cloud environments use ml-dev / ml-staging / ml-prod (separate namespaces).
+# Helm merges files in order — this file wins on any conflicts.
+# In cloud deployments, this file is NOT passed — the env file alone is used.
+
+# Set environment to local for Minikube testing
+environment: "local"
+
+image:
+  repository: ml-api        # locally built image (not from registry)
+  tag: local
+  pullPolicy: Never         # don't try to pull from internet — use local image
+
+# Disable secrets for local testing — no secret needs to be pre-created.
+# In cloud, the env values file has enabled: true and ESO creates the secret
+# automatically before the pod starts.
+secretRef:
+  enabled: false
