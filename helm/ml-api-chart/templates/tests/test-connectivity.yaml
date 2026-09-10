@@ -12,6 +12,7 @@ spec:
   containers:
     - name: connectivity-test
       image: curlimages/curl:8.7.1
+      imagePullPolicy: IfNotPresent
       command:
         - sh
         - -c
@@ -26,11 +27,11 @@ spec:
 
           # Wait for endpoint to be reachable
           echo "Waiting for API to respond..."
-          curl -s --retry 10 --retry-delay 1 -o /dev/null "$BASE_URL/health" || true
+          curl -s --retry 15 --retry-connrefused --retry-delay 1 -o /dev/null "$BASE_URL/health" || true
 
           # Test 1: Root endpoint returns 200
           echo "[TEST 1] Root endpoint (GET /)"
-          RESPONSE=$(curl -s --retry 5 --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/")
+          RESPONSE=$(curl -s --retry 5 --retry-connrefused --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/")
           if [ "$RESPONSE" = "200" ]; then
             echo "  ✓ PASS (HTTP $RESPONSE)"
           else
@@ -40,7 +41,7 @@ spec:
 
           # Test 2: Health probe (GET /health)
           echo "[TEST 2] Health probe (GET /health)"
-          RESPONSE=$(curl -s --retry 5 --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+          RESPONSE=$(curl -s --retry 5 --retry-connrefused --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/health")
           if [ "$RESPONSE" = "200" ]; then
             echo "  ✓ PASS (HTTP $RESPONSE)"
           else
@@ -50,7 +51,7 @@ spec:
 
           # Test 3: Readiness probe (GET /ready)
           echo "[TEST 3] Readiness probe (GET /ready)"
-          RESPONSE=$(curl -s --retry 5 --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/ready")
+          RESPONSE=$(curl -s --retry 5 --retry-connrefused --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/ready")
           if [ "$RESPONSE" = "200" ]; then
             echo "  ✓ PASS (HTTP $RESPONSE)"
           else
@@ -60,7 +61,7 @@ spec:
 
           # Test 4: Response body contains expected environment label
           echo "[TEST 4] Environment label in response body"
-          BODY=$(curl -s --retry 5 --retry-delay 1 "$BASE_URL/")
+          BODY=$(curl -s --retry 5 --retry-connrefused --retry-delay 1 "$BASE_URL/")
           if echo "$BODY" | grep "{{ .Values.environment }}" > /dev/null; then
             echo "  ✓ PASS (environment={{ .Values.environment }} found in response)"
           else
@@ -70,7 +71,7 @@ spec:
 
           # Test 5: Predict endpoint returns 200
           echo "[TEST 5] Predict endpoint (GET /predict)"
-          RESPONSE=$(curl -s --retry 5 --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/predict?input=test")
+          RESPONSE=$(curl -s --retry 5 --retry-connrefused --retry-delay 1 -o /dev/null -w "%{http_code}" "$BASE_URL/predict?input=test")
           if [ "$RESPONSE" = "200" ]; then
             echo "  ✓ PASS (HTTP $RESPONSE)"
           else

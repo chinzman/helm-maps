@@ -23,9 +23,14 @@ echo ""
 # -------------------------------------------------------
 # STEP 1: Start Minikube
 # -------------------------------------------------------
-echo "STEP 1: Starting Minikube..."
-minikube start --driver=docker --cpus=2 --memory=3500mb
-echo "Minikube is running!"
+eval $(minikube docker-env -u 2>/dev/null || true)
+if minikube status 2>/dev/null | grep -q "host: Running"; then
+  echo "STEP 1: Minikube is already running — skipping startup."
+else
+  echo "STEP 1: Starting Minikube..."
+  minikube start --driver=docker --cpus=2 --memory=3500mb
+  echo "Minikube is running!"
+fi
 echo ""
 
 # -------------------------------------------------------
@@ -87,6 +92,8 @@ echo ""
 # STEP 7: Port-forward and call the API
 # -------------------------------------------------------
 echo "STEP 7: Starting port-forward on port $PORT..."
+pkill -f "port-forward.*$PORT" 2>/dev/null || true
+sleep 1
 kubectl port-forward svc/$RELEASE_NAME-ml-api-chart $PORT:80 -n $NAMESPACE &
 PF_PID=$!
 sleep 3
@@ -116,6 +123,7 @@ echo ""
 # STEP 8: Run helm test (connectivity test pod in-cluster)
 # -------------------------------------------------------
 echo "STEP 8: Running helm test (in-cluster connectivity test)..."
+kubectl delete pod $RELEASE_NAME-ml-api-chart-test-connection -n $NAMESPACE 2>/dev/null || true
 helm test $RELEASE_NAME -n $NAMESPACE --logs
 echo ""
 
